@@ -1,0 +1,32 @@
+[project]
+name = "mailafrica-agent"
+version = "0.1.0"
+description = "MailAfrica agent — MCP tools for the MailAfrica API plus Ngamia-powered auto-reply for inbound email"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2,<2",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.32,<1",
+    "httpx>=0.27,<1",
+    "openai>=1.55,<2",
+    "pydantic-settings>=2.6,<3",
+    "aiosqlite>=0.20,<1",
+]
+
+[project.scripts]
+mailafrica-agent = "mailafrica_agent.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mailafrica_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501"]
