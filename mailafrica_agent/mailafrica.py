@@ -147,6 +147,39 @@ class MailAfricaClient:
     async def test_webhook(self, webhook_id: int) -> dict[str, Any]:
         return await self._request("POST", f"/webhooks/webhooks/{webhook_id}/test")
 
+    # --- agent config (single source of truth lives in Mail-API) ------------
+
+    async def get_agent_config(self, address_id: int) -> dict[str, Any] | None:
+        """Fetch the auto-reply config Mail-API holds for an inbound address.
+        Returns None when nothing has been saved yet."""
+        try:
+            return await self._request("GET", f"/agent/configs/{address_id}")
+        except MailAfricaError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    async def set_agent_config(self, address_id: int, **kwargs: Any) -> dict[str, Any]:
+        """Upsert the auto-reply config for an inbound address."""
+        payload: dict[str, Any] = {}
+        for key in ("mode", "persona", "enabled", "reply_from_domain_id", "reply_from_address"):
+            if kwargs.get(key) is not None:
+                payload[key] = kwargs[key]
+        return await self._request("PUT", f"/agent/configs/{address_id}", json=payload)
+
+    async def list_agent_configs(self) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/agent/configs")
+        return data if isinstance(data, list) else []
+
+    async def draft_reply(self, address_id: int, subject: str, text_body: str) -> str:
+        """Ask Mail-API for a one-off auto-reply preview (never sends)."""
+        data = await self._request(
+            "POST",
+            f"/agent/configs/{address_id}/draft",
+            json={"subject": subject, "text_body": text_body},
+        )
+        return data.get("draft") or ""
+
     # --- billing ------------------------------------------------------------
 
     async def balance(self) -> dict[str, Any]:

@@ -1,0 +1,21 @@
+[Unit]
+Description=MailAfrica Agent webhook (AI auto-reply)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mailafrica
+Group=mailafrica
+WorkingDirectory=/home/mailafrica/projects/mailafrica-agent
+EnvironmentFile=/home/mailafrica/projects/mailafrica-agent/.env
+ExecStart=/home/mailafrica/projects/mailafrica-agent/.venv/bin/mailafrica-agent webhook
+Restart=always
+RestartSec=3
+# Only the process group is protected; the agent reads keys from .env.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/home/mailafrica/projects/mailafrica-agent
+
+[Install]
+WantedBy=multi-user.target

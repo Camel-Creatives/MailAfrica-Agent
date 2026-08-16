@@ -8,21 +8,6 @@ import aiosqlite
 
 
 @dataclass
-class AddressAgent:
-    """Per-inbound-address auto-reply configuration."""
-
-    address_id: int
-    mode: str = "off"  # auto | draft | off
-    persona: str | None = None
-    enabled: bool = True
-    reply_from_domain_id: int | None = None
-    reply_from_address: str | None = None
-
-    def effective_persona(self, default: str) -> str:
-        return self.persona or default
-
-
-@dataclass
 class ConversationTurn:
     role: str  # user | assistant
     content: str
@@ -31,13 +16,15 @@ class ConversationTurn:
 
 
 class Store:
-    """SQLite-backed conversation + agent-config store.
+    """SQLite-backed conversation-memory store.
 
-    Threads are keyed by normalized subject + the original sender, because
-    MailAfrica's inbound parser exposes headers but not In-Reply-To, so reply
-    chains are best reconstructed from (subject, sender). Replies sent by the
-    agent are recorded back into the same thread so the LLM sees the full
-    conversation.
+    Auto-reply *configuration* now lives in MailAfrica's own database (the
+    single source of truth shared with the web app); this store keeps only
+    thread history, so the LLM sees the full conversation. Threads are keyed
+    by normalized subject + the original sender, because MailAfrica's inbound
+    parser exposes headers but not In-Reply-To, so reply chains are best
+    reconstructed from (subject, sender). Replies sent by the agent are
+    recorded back into the same thread.
     """
 
     def __init__(self, path: str):
@@ -50,17 +37,8 @@ class Store:
         # process share the same SQLite file without "database is locked".
         await self.db.execute("PRAGMA journal_mode=WAL")
         await self.db.execute("PRAGMA busy_timeout=5000")
-        await self.db.executescript(
+        await         self.db.executescript(
             """
-            CREATE TABLE IF NOT EXISTS agent_addresses (
-                address_id             INTEGER PRIMARY KEY,
-                mode                   TEXT NOT NULL DEFAULT 'off',
-                persona                TEXT,
-                enabled                INTEGER NOT NULL DEFAULT 1,
-                reply_from_domain_id   INTEGER,
-                reply_from_address     TEXT
-            );
-
             CREATE TABLE IF NOT EXISTS conversations (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 thread_key  TEXT NOT NULL,
@@ -77,76 +55,6 @@ class Store:
 
     async def close(self) -> None:
         await self.db.close()
-
-    # --- agent config -------------------------------------------------------
-
-    async def get_address_agent(self, address_id: int) -> AddressAgent | None:
-        cur = await self.db.execute(
-            "SELECT address_id, mode, persona, enabled, reply_from_domain_id, reply_from_address "
-            "FROM agent_addresses WHERE address_id = ?",
-            (address_id,),
-        )
-        row = await cur.fetchone()
-        await cur.close()
-        if row is None:
-            return None
-        return AddressAgent(
-            address_id=row["address_id"],
-            mode=row["mode"],
-            persona=row["persona"],
-            enabled=bool(row["enabled"]),
-            reply_from_domain_id=row["reply_from_domain_id"],
-            reply_from_address=row["reply_from_address"],
-        )
-
-    async def set_address_agent(
-        self,
-        address_id: int,
-        mode: str | None = None,
-        persona: str | None = None,
-        reply_from_domain_id: int | None = None,
-        reply_from_address: str | None = None,
-    ) -> AddressAgent:
-        cur = await self.db.execute(
-            "INSERT INTO agent_addresses (address_id, mode) VALUES (?, 'off') "
-            "ON CONFLICT(address_id) DO NOTHING",
-            (address_id,),
-        )
-        await cur.close()
-        if mode is not None:
-            await self._set_field(address_id, "mode", mode)
-        if persona is not None:
-            await self._set_field(address_id, "persona", persona)
-        if reply_from_domain_id is not None:
-            await self._set_field(address_id, "reply_from_domain_id", str(reply_from_domain_id))
-        if reply_from_address is not None:
-            await self._set_field(address_id, "reply_from_address", reply_from_address)
-        await self.db.commit()
-        existing = await self.get_address_agent(address_id)
-        assert existing is not None
-        return existing
-
-    async def _set_field(self, address_id: int, column: str, value: str) -> None:
-        cur = await self.db.execute(
-            f"UPDATE agent_addresses SET {column} = ? WHERE address_id = ?", (value, address_id)
-        )
-        await cur.close()
-
-    async def list_address_agents(self) -> list[AddressAgent]:
-        cur = await self.db.execute("SELECT * FROM agent_addresses")
-        rows = await cur.fetchall()
-        await cur.close()
-        return [
-            AddressAgent(
-                address_id=row["address_id"],
-                mode=row["mode"],
-                persona=row["persona"],
-                enabled=bool(row["enabled"]),
-                reply_from_domain_id=row["reply_from_domain_id"],
-                reply_from_address=row["reply_from_address"],
-            )
-            for row in rows
-        ]
 
     # --- conversations ------------------------------------------------------
 

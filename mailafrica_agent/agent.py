@@ -59,9 +59,10 @@ class Agent:
                 "reason": "bounce or automated sender",
             }
 
-        cfg = await self.store.get_address_agent(address_id)
-        mode = cfg.mode if cfg and cfg.enabled else self.settings.agent_default_mode
-        if mode not in ("auto", "draft"):
+        cfg = await self._address_config(address_id)
+        mode = (cfg or {}).get("mode") or self.settings.agent_default_mode
+        enabled = cfg.get("enabled", True) if cfg else True
+        if mode not in ("auto", "draft") or not enabled:
             return {"message_id": message_id, "action": "off", "mode": mode}
 
         body = (msg.get("text_body") or "").strip() or (msg.get("html_body") or "").strip()
@@ -72,7 +73,7 @@ class Agent:
         thread_key = self.store.thread_key(subject, sender)
         await self.store.append_turn(thread_key, "user", body, message_id)
 
-        persona = cfg.effective_persona(self.settings.agent_default_persona) if cfg else self.settings.agent_default_persona
+        persona = (cfg or {}).get("persona") or self.settings.agent_default_persona
         history = await self.store.get_thread(thread_key, limit=40)
         llm_messages = [{"role": "system", "content": persona}]
         llm_messages += [{"role": t.role, "content": t.content} for t in history]
@@ -97,15 +98,28 @@ class Agent:
             "subject": reply_subject,
             "text_body": reply,
         }
-        if cfg and cfg.reply_from_domain_id:
-            send_kwargs["from_domain_id"] = cfg.reply_from_domain_id
-        if cfg and cfg.reply_from_address:
-            send_kwargs["from_address"] = cfg.reply_from_address
+        if cfg and cfg.get("reply_from_domain_id"):
+            send_kwargs["from_domain_id"] = cfg["reply_from_domain_id"]
+        if cfg and cfg.get("reply_from_address"):
+            send_kwargs["from_address"] = cfg["reply_from_address"]
 
         sent = await self.mail.send_email(**send_kwargs)
         out.update({"sent": sent, "to": sender, "subject": reply_subject})
         await self.store.append_turn(thread_key, "assistant", reply, message_id)
         return out
+
+    async def _address_config(self, address_id: int) -> dict[str, Any] | None:
+        """The address's auto-reply config from Mail-API (the single source of
+        truth). On network failures we fall back to the local defaults rather
+        than drop the message."""
+        try:
+            cfg = await self.mail.get_agent_config(address_id)
+        except Exception:
+            logger.exception("agent config fetch failed for address %s; using defaults", address_id)
+            return None
+        if cfg is None:
+            logger.info("address %s: no agent config saved yet; using defaults", address_id)
+        return cfg
 
     @staticmethod
     def _is_no_reply_target(msg: dict[str, Any]) -> bool:

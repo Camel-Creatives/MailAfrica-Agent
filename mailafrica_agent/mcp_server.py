@@ -57,7 +57,6 @@ def build_server(runtime: Runtime) -> FastMCP:
     mcp = FastMCP("mailafrica-agent", lifespan=lifespan)
     mail = runtime.mail
     ngamia = runtime.ngamia
-    store = runtime.store
     agent = runtime.agent
 
     # ---- outbound ----------------------------------------------------------
@@ -188,41 +187,34 @@ def build_server(runtime: Runtime) -> FastMCP:
         """Configure auto-reply for an inbound address. mode is 'auto' (send
         replies), 'draft' (produce but don't send), or 'off'. persona overrides
         the default system prompt. reply_from_domain_id/reply_from_address
-        choose the From address replies are sent from."""
+        choose the From address replies are sent from. Saved to MailAfrica (the
+        source of truth shared with the web app)."""
         if mode is not None and mode not in MODES:
             return {"error": f"mode must be one of {MODES}"}
-        cfg = await store.set_address_agent(
-            address_id,
-            mode=mode,
-            persona=persona,
-            reply_from_domain_id=reply_from_domain_id,
-            reply_from_address=reply_from_address,
-        )
-        return {
-            "address_id": cfg.address_id,
-            "mode": cfg.mode,
-            "persona": cfg.persona,
-            "enabled": cfg.enabled,
-            "reply_from_domain_id": cfg.reply_from_domain_id,
-            "reply_from_address": cfg.reply_from_address,
-        }
+        kwargs = {k: v for k, v in {
+            "mode": mode,
+            "persona": persona,
+            "reply_from_domain_id": reply_from_domain_id,
+            "reply_from_address": reply_from_address,
+        }.items() if v is not None}
+        return await mail.set_agent_config(address_id, **kwargs)
+
+    @mcp.tool()
+    async def agent_get_config(address_id: int) -> dict[str, Any]:
+        """Fetch the current auto-reply config for an inbound address."""
+        cfg = await mail.get_agent_config(address_id)
+        return cfg or {"address_id": address_id, "mode": "off", "enabled": True}
 
     @mcp.tool()
     async def agent_status() -> dict[str, Any]:
         """Which addresses have auto-reply configured and their modes."""
-        cfgs = await store.list_address_agents()
-        return {
-            "addresses": [
-                {
-                    "address_id": c.address_id,
-                    "mode": c.mode,
-                    "persona": c.persona,
-                    "reply_from_domain_id": c.reply_from_domain_id,
-                    "reply_from_address": c.reply_from_address,
-                }
-                for c in cfgs
-            ]
-        }
+        cfgs = await mail.list_agent_configs()
+        return {"addresses": cfgs}
+
+    @mcp.tool()
+    async def agent_draft(address_id: int, subject: str, text_body: str) -> dict[str, Any]:
+        """Generate a one-off auto-reply preview via MailAfrica (never sends)."""
+        return {"draft": await mail.draft_reply(address_id, subject, text_body)}
 
     @mcp.tool()
     async def agent_handle_message(message_id: int, address_id: int) -> dict[str, Any]:

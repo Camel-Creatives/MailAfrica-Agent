@@ -15,11 +15,16 @@ two things:
 ```
 Incoming email ──► MailAfrica inbound ──► webhook ──► this service ──► Ngamia (LLM)
  (support@you.com)   (parses & stores)   (signed)      │                    │
-                                                       │  thread memory     │
-                                                       │  (SQLite)          │
-                                                       └────► reply sent via MailAfrica outbound
-                                                             (auto or draft, per-address config)
+                                                        │  thread memory     │
+                                                        │  (SQLite)          │
+                                                        └────► reply sent via MailAfrica outbound
+                                                              (auto or draft, per-address config)
 ```
+
+The **auto-reply config itself lives in MailAfrica's database** (the same
+endpoints the web app uses), so you can turn a mailbox's auto-reply on/off
+from the **MailAfrica dashboard** — Inbox → select an address → *AI
+Auto-reply* — and this service just reads that config before replying.
 
 ---
 
@@ -72,7 +77,11 @@ to WAL mode):
 A thin `httpx` client over `https://api.mailafrica.online/api/...`. Every
 method maps to a MailAfrica endpoint and unwraps the `{success, data, errors}`
 response envelope, raising `MailAfricaError` on failure. All endpoints accept
-the same `MAIL_...` API key via the `X-API-Key` header.
+the same `MAIL_...` API key via the `X-API-Key` header. Besides the mail
+operations it also exposes the agent-config endpoints
+(`get_agent_config` / `set_agent_config` / `list_agent_configs` /
+`draft_reply`) — that is how the pipeline and the `agent_*` MCP tools talk to
+MailAfrica's database.
 
 ### `mailafrica_agent/ngamia.py` — Ngamia client
 
@@ -81,15 +90,14 @@ A thin wrapper over the official OpenAI SDK pointed at
 OpenAI's wire format exactly, model ids from `GET /v1/models` are passed
 through verbatim (e.g. `openai/gpt-4o-mini`) — nothing is hardcoded.
 
-### `mailafrica_agent/store.py` — conversation + config store
+### `mailafrica_agent/store.py` — conversation-memory store
 
-SQLite (via `aiosqlite`), two tables:
-
-- `agent_addresses` — per-inbound-address auto-reply configuration: `mode`,
-  `persona`, `enabled`, `reply_from_domain_id`, `reply_from_address`.
-- `conversations` — the message history for each thread, one row per turn
-  (`user` / `assistant`), so the LLM sees the whole conversation, not just
-  the latest email.
+SQLite (via `aiosqlite`) holding just the message history: one `conversations`
+row per turn (`user` / `assistant`), keyed by thread, so the LLM sees the
+whole conversation, not just the latest email. Auto-reply *configuration*
+does **not** live here anymore — it lives in MailAfrica's own database, the
+single source of truth shared with the web app (see
+[The auto-reply agent](#the-auto-reply-agent)).
 
 ### `mailafrica_agent/agent.py` — the auto-reply pipeline
 
@@ -99,7 +107,9 @@ SQLite (via `aiosqlite`), two tables:
 2. **Safety gate** — drops bounces (`MAILER-DAEMON`, `postmaster`),
    auto-responders (`X-Auto-Reply`, `Auto-Submitted: auto`, `Precedence: auto`),
    and bulk mail (`List-Unsubscribe`). These are never replied to.
-3. Loads the address's config (falls back to the default persona / mode).
+3. Loads the address's config **from MailAfrica** (`GET /api/agent/configs/{id}`);
+   on a network error it falls back to the default persona / mode rather than
+   drop the message.
 4. Appends the incoming message to its thread, builds the LLM prompt
    (`system` persona + full thread history).
 5. Asks Ngamia for a reply.
@@ -215,7 +225,7 @@ configured model — a quick way to confirm both keys work.
 | `NGAMIA_API_KEY` | _(none)_ | `ngm_...` key for chat completions. |
 | `NGAMIA_MODEL` | `openai/gpt-4o-mini` | Model id used for replies. Pull the current list with the `list_models` tool. |
 | `AGENT_WEBHOOK_SECRET` | _(empty)_ | Secret for verifying MailAfrica webhook signatures. Set it in production. |
-| `AGENT_DB_PATH` | `agent.db` | SQLite file for conversations + agent config. |
+| `AGENT_DB_PATH` | `agent.db` | SQLite file for conversation/thread memory (config lives in MailAfrica). |
 | `AGENT_DEFAULT_PERSONA` | built-in assistant persona | Fallback system prompt for addresses without a custom persona. |
 | `AGENT_DEFAULT_MODE` | `off` | Default mode: `auto`, `draft` or `off`. |
 | `AGENT_HOST` / `AGENT_PORT` | `0.0.0.0` / `8000` | Webhook HTTP server bind address. |
@@ -303,8 +313,10 @@ want to auto-answer, with:
 
 | Tool | What it does |
 |---|---|
-| `agent_config` | Configure an address: `mode` (`auto`/`draft`/`off`), `persona`, and the From used for replies. |
-| `agent_status` | All configured addresses and their modes. |
+| `agent_config` | Configure an address: `mode` (`auto`/`draft`/`off`), `persona`, and the From used for replies. Saved to MailAfrica — same store the web app UI writes. |
+| `agent_get_config` | Current config for one address. |
+| `agent_status` | All configured addresses and their modes (from MailAfrica). |
+| `agent_draft` | One-off reply preview via MailAfrica (never sends). |
 | `agent_handle_message` | Run the pipeline for a message now. |
 | `list_models` | Models available on Ngamia. |
 
@@ -312,8 +324,14 @@ want to auto-answer, with:
 
 ## The auto-reply agent
 
-Auto-reply is **per inbound address** and **off by default**. To turn it on,
-pick the address id (from `list_inbound_addresses`) and configure it:
+Auto-reply is **per inbound address** and **off by default**. You can
+configure it two ways — both write to the same place (MailAfrica's database):
+
+1. **The web app**: MailAfrica dashboard → **Inbox** → select an address →
+   the *AI Auto-reply* card. Pick a mode, paste persona instructions, choose
+   the From address, save — and hit *Test a reply* for a no-send preview.
+2. **The MCP tool**: pick the address id (from `list_inbound_addresses`) and
+   call `agent_config`:
 
 ```
 agent_config(
@@ -334,6 +352,11 @@ Modes:
 
 If `reply_from_domain_id`/`reply_from_address` are unset, replies are sent
 from the platform sender; set them to reply from your own verified domain.
+
+**Flow when mail arrives:** MailAfrica stores the message → fires the webhook
+to this service → the pipeline fetches the address's config from MailAfrica
+→ if `auto`, generates + sends the reply (recorded in thread memory); if
+`draft`, generates but doesn't send.
 
 ---
 
@@ -380,28 +403,31 @@ The last 40 turns are used, so multi-turn conversations stay coherent.
 
 ## Deployment (VPS)
 
-A `systemd` unit per process. Example for the webhook server:
+The agent deploys to the same VPS that hosts MailAfrica's API, fronted by the
+`agent.mailafrica.online` subdomain. Everything is in `deploy/`:
 
-```ini
-[Unit]
-Description=MailAfrica Agent webhook
-After=network-online.target
+- **`.github/workflows/deploy.yml`** — on push to `main`, GitHub Actions SSHes
+  to the VPS with a restricted deploy key. Pushing triggers an auto-deploy,
+  mirroring Mail-API's pipeline.
+- **`deploy.sh`** — the forced command on the deploy key: `git pull --ff-only`,
+  `uv sync --frozen`, `systemctl restart mailafrica-agent-webhook`.
+- **`deploy/mailafrica-agent-webhook.service`** — the `systemd` unit for the
+  webhook process (binds `0.0.0.0:8000`).
+- **`deploy/setup_vps.sh`** — one-time root script on the VPS: creates the
+  `mailafrica` user, clones the repo, installs uv deps, generates the
+  restricted deploy key, installs the unit, and prints the exact Caddy/nginx
+  snippet for `agent.mailafrica.online` → `127.0.0.1:8000` plus the GitHub
+  secrets to set (`SSH_PRIVATE_KEY`, `SSH_HOST`, `SSH_PORT`, `SSH_USER`).
 
-[Service]
-WorkingDirectory=/opt/MailAfrica-Agent
-EnvironmentFile=/opt/MailAfrica-Agent/.env
-ExecStart=/root/.local/bin/uv run mailafrica-agent webhook
-Restart=on-failure
-User=mailafrica
-
-[Install]
-WantedBy=multi-user.target
+```bash
+# from your laptop, run once on the VPS as root:
+scp deploy/setup_vps.sh root@<VPS>:/tmp/
+ssh root@<VPS> bash /tmp/setup_vps.sh
+# then: edit the .env, systemctl enable --now mailafrica-agent-webhook
 ```
 
-and a matching unit with `mailafrica-agent mcp` for the MCP server. Put a
-reverse proxy (Caddy/nginx) in front of the webhook port if it's public, or
-keep it on a private network and have MailAfrica's webhook reach it over a
-tunnel/VPN.
+The **MCP server runs locally on your machine** (stdio) and is never deployed
+— only the webhook process lives on the VPS.
 
 ---
 
