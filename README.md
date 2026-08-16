@@ -228,7 +228,7 @@ configured model — a quick way to confirm both keys work.
 | `AGENT_DB_PATH` | `agent.db` | SQLite file for conversation/thread memory (config lives in MailAfrica). |
 | `AGENT_DEFAULT_PERSONA` | built-in assistant persona | Fallback system prompt for addresses without a custom persona. |
 | `AGENT_DEFAULT_MODE` | `off` | Default mode: `auto`, `draft` or `off`. |
-| `AGENT_HOST` / `AGENT_PORT` | `0.0.0.0` / `8000` | Webhook HTTP server bind address. |
+| `AGENT_HOST` / `AGENT_PORT` | `0.0.0.0` / `8097` | Webhook HTTP server bind address. |
 
 ---
 
@@ -257,6 +257,25 @@ Register in Claude Desktop — `claude_desktop_config.json`:
 
 ```bash
 uv run mailafrica-agent webhook
+```
+
+### Docker deployment
+
+Build and start with **Docker Compose**:
+
+```bash
+docker compose up -d --build
+```
+
+Or run directly with **Docker**:
+
+```bash
+docker build -t mailafrica-agent .
+docker run -d --name mailafrica-agent \
+  --env-file .env \
+  -p 8097:8097 \
+  -v mailafrica_agent_data:/app/data \
+  mailafrica-agent
 ```
 
 Then in the MailAfrica dashboard create a webhook on the inbound address you
@@ -412,11 +431,11 @@ The agent deploys to the same VPS that hosts MailAfrica's API, fronted by the
 - **`deploy.sh`** — the forced command on the deploy key: `git pull --ff-only`,
   `uv sync --frozen`, `systemctl restart mailafrica-agent-webhook`.
 - **`deploy/mailafrica-agent-webhook.service`** — the `systemd` unit for the
-  webhook process (binds `0.0.0.0:8000`).
+  webhook process (binds `0.0.0.0:8097`).
 - **`deploy/setup_vps.sh`** — one-time root script on the VPS: creates the
   `mailafrica` user, clones the repo, installs uv deps, generates the
   restricted deploy key, installs the unit, and prints the exact Caddy/nginx
-  snippet for `agent.mailafrica.online` → `127.0.0.1:8000` plus the GitHub
+  snippet for `agent.mailafrica.online` → `127.0.0.1:8097` plus the GitHub
   secrets to set (`SSH_PRIVATE_KEY`, `SSH_HOST`, `SSH_PORT`, `SSH_USER`).
 
 ```bash

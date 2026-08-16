@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# Deploy script for the MailAfrica Agent — invoked by the restricted SSH key
-# (GitHub Actions deploy.yml) as the forced command.
+# Deploy script for the MailAfrica Agent — invoked by GitHub Actions or deploy key.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 PROJECT_DIR="$(pwd)"
 
-echo "[deploy] pulling $PROJECT_DIR"
+echo "[deploy] pulling latest main branch in $PROJECT_DIR"
 git pull --ff-only origin main
 
-echo "[deploy] installing dependencies (uv)"
-if command -v uv >/dev/null 2>&1; then
-  uv sync --frozen
-else
-  echo "uv is not installed — run: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
-  exit 1
-fi
-
-echo "[deploy] restarting services"
-if systemctl is-active --quiet mailafrica-agent-webhook; then
+if command -v docker >/dev/null 2>&1 && [ -f "docker-compose.yml" ]; then
+  echo "[deploy] deploying container via Docker Compose..."
+  docker compose up -d --build
+elif systemctl is-active --quiet mailafrica-agent-webhook; then
+  echo "[deploy] installing dependencies (uv)..."
+  if command -v uv >/dev/null 2>&1; then
+    uv sync --frozen
+  fi
+  echo "[deploy] restarting systemd service..."
   systemctl restart mailafrica-agent-webhook
 else
-  echo "[deploy] mailafrica-agent-webhook is not active — is it installed? (see deploy/setup_vps.sh)" >&2
+  echo "[deploy] starting Docker Compose..."
+  docker compose up -d --build
 fi
 
-echo "[deploy] done"
+echo "[deploy] deployment complete!"

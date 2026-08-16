@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  mailafrica-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mailafrica-agent-webhook
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8097:8097"
+    volumes:
+      - agent_data:/app/data
+    environment:
+      - AGENT_HOST=0.0.0.0
+      - AGENT_PORT=8097
+      - AGENT_DB_PATH=/app/data/agent.db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8097/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  agent_data:
+    driver: local

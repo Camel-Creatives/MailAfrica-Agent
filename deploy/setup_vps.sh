@@ -90,11 +90,11 @@ echo "     SSH_USER        = ${APP_USER}"
 echo "4. Point agent.mailafrica.online at the VPS, then reverse-proxy it:
    Caddy:
      agent.mailafrica.online {
-       reverse_proxy 127.0.0.1:8000
+       reverse_proxy 127.0.0.1:8097
      }
    nginx:
      server_name agent.mailafrica.online;
-     location / { proxy_pass http://127.0.0.1:8000; }
+     location / { proxy_pass http://127.0.0.1:8097; }
 5. Install + start the webhook unit once .env is valid:
      systemctl enable --now mailafrica-agent-webhook
 6. In the MailAfrica app, create a webhook on each inbound address:
