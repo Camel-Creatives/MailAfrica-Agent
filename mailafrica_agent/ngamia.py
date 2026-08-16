@@ -29,7 +29,9 @@ class NgamiaClient:
             models = await self._client.models.list()
         except Exception as exc:  # pragma: no cover - gateway dependent
             raise NgamiaError(f"list models failed: {exc}") from exc
-        return [m.id for m in models.data]
+        # Each catalog row exposes both `id` (internal row id) and `model`
+        # (the value to pass to chat completions). Only `model` is callable.
+        return [getattr(m, "model", None) or m.id for m in models.data]
 
     async def complete(
         self,
