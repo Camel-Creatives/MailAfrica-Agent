@@ -8,12 +8,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
 from .config import Settings
 from .mcp_server import Runtime
 
 logger = logging.getLogger("mailafrica_agent.webhook")
 
 MAILAFRICA_SIGNATURE_HEADERS = ("X-Webhook-Signature", "X-Signature")
+
+
+class ChatRequest(BaseModel):
+    messages: list[dict[str, str]]
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -27,9 +34,27 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(title="MailAfrica Agent", lifespan=lifespan)
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/chat")
+    @app.post("/v1/support/chat")
+    async def chat(req: ChatRequest) -> JSONResponse:
+        try:
+            reply = await runtime.agent.chat(req.messages)
+            return JSONResponse({"reply": reply})
+        except Exception as exc:
+            logger.exception("chat endpoint error")
+            return JSONResponse({"reply": "I encountered an error processing your query. Please try again."}, status_code=500)
 
     @app.post("/webhooks/mailafrica")
     async def mailafrica_webhook(request: Request) -> JSONResponse:
