@@ -58,5 +58,25 @@ class NgamiaClient:
         """Alias so MCP tool names stay explicit; keeps callers readable."""
         return await self.complete(**kwargs)
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        max_tokens: int = 1000,
+        temperature: float = 0.6,
+    ) -> Any:
+        try:
+            resp = await self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return resp.choices[0].message
+        except Exception as exc:
+            raise NgamiaError(f"chat completion with tools failed: {exc}") from exc
+
     async def aclose(self) -> None:
         await self._client.close()

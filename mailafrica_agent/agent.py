@@ -76,6 +76,48 @@ Guidelines:
 """
 
 
+import json
+
+CHAT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send an outbound email to one or more recipient email addresses.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of recipient email addresses e.g. ['recipient@example.com']",
+                    },
+                    "subject": {"type": "string", "description": "Subject of the email"},
+                    "text_body": {"type": "string", "description": "Plain text body content of the email"},
+                },
+                "required": ["to", "subject", "text_body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wallet_balance",
+            "description": "Get current MailAfrica wallet balance in TZS.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_inbound_addresses",
+            "description": "List inbound receiving email addresses registered on the MailAfrica account.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
 class Agent:
     """The auto-reply pipeline: inbound message -> thread memory -> Ngamia -> reply.
 
@@ -97,6 +139,52 @@ class Agent:
                 llm_messages.append({"role": m["role"], "content": m["content"]})
         if len(llm_messages) <= 1 or llm_messages[-1]["role"] != "user":
             return "Hello! I am your MailAfrica AI Assistant. How can I help you today?"
+
+        try:
+            msg = await self.ngamia.complete_with_tools(llm_messages, CHAT_TOOLS)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    fn_name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments or "{}")
+
+                    if fn_name == "send_email":
+                        to = args.get("to") or []
+                        if isinstance(to, str):
+                            to = [to]
+                        subject = args.get("subject") or "No Subject"
+                        text_body = args.get("text_body") or ""
+                        result = await self.mail.send_email(to=to, subject=subject, text_body=text_body)
+                        result_str = f"Email sent successfully: {result}"
+                    elif fn_name == "wallet_balance":
+                        res = await self.mail.balance()
+                        result_str = f"Wallet balance: {res}"
+                    elif fn_name == "list_inbound_addresses":
+                        res = await self.mail.list_addresses()
+                        result_str = f"Inbound addresses: {res}"
+                    else:
+                        result_str = "Tool executed."
+
+                    llm_messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {"name": fn_name, "arguments": tool_call.function.arguments}
+                        }]
+                    })
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result_str,
+                    })
+
+                reply = await self.ngamia.complete(llm_messages)
+                return reply
+            elif getattr(msg, "content", None):
+                return msg.content
+        except Exception as exc:
+            logger.warning("complete_with_tools fallback to basic completion: %s", exc)
 
         reply = await self.ngamia.complete(llm_messages)
         return reply
